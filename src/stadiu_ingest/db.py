@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Generator, Iterable, Mapping
 
@@ -240,6 +240,128 @@ def known_stadiu_urls() -> set[str]:
     return {r[0] for r in rows}
 
 
+def list_stadiu_document_urls_by_list_year() -> dict[str, set[str]]:
+    """
+    list_year → множество URL документов. Если на сайте сменили имя PDF (новый href) для того же года,
+    новый URL не входит в множество — его можно приоритезировать в очереди скачивания.
+    """
+    with get_conn() as conn:
+        if _USE_PG:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT list_year, url FROM stadiu_list_documents
+                    WHERE list_year IS NOT NULL AND TRIM(list_year) <> ''
+                    """
+                )
+                rows = cur.fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT list_year, url FROM stadiu_list_documents
+                WHERE list_year IS NOT NULL AND TRIM(list_year) <> ''
+                """
+            ).fetchall()
+    out: dict[str, set[str]] = {}
+    for ly, url in rows:
+        if not ly or not url:
+            continue
+        y = str(ly).strip()
+        if not y:
+            continue
+        out.setdefault(y, set()).add(str(url).strip())
+    return out
+
+
+def resolve_stadiu_document_pk(href: str) -> str | None:
+    """
+    Первичный ключ строки в stadiu_list_documents для ссылки со страницы:
+    сам URL или canonical_url, если href записан только как алиас.
+    """
+    with get_conn() as conn:
+        if _USE_PG:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM stadiu_list_documents WHERE url = %s LIMIT 1",
+                    (href,),
+                )
+                if cur.fetchone():
+                    return href
+                cur.execute(
+                    "SELECT canonical_url FROM stadiu_url_aliases WHERE list_url = %s LIMIT 1",
+                    (href,),
+                )
+                row = cur.fetchone()
+        else:
+            row = conn.execute(
+                "SELECT 1 FROM stadiu_list_documents WHERE url = ? LIMIT 1", (href,)
+            ).fetchone()
+            if row:
+                return href
+            row = conn.execute(
+                "SELECT canonical_url FROM stadiu_url_aliases WHERE list_url = ? LIMIT 1",
+                (href,),
+            ).fetchone()
+    return row[0] if row else None
+
+
+def get_stadiu_sha_and_downloaded_at(url_pk: str) -> tuple[str | None, str | None]:
+    with get_conn() as conn:
+        if _USE_PG:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT content_sha256, downloaded_at::text FROM stadiu_list_documents WHERE url = %s",
+                    (url_pk,),
+                )
+                row = cur.fetchone()
+        else:
+            row = conn.execute(
+                "SELECT content_sha256, downloaded_at FROM stadiu_list_documents WHERE url = ?",
+                (url_pk,),
+            ).fetchone()
+    if not row:
+        return None, None
+    return row[0], row[1]
+
+
+def touch_stadiu_downloaded_at(url_pk: str) -> None:
+    now = _utc_now_iso()
+    if _USE_PG:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE stadiu_list_documents SET downloaded_at = %s WHERE url = %s",
+                    (now, url_pk),
+                )
+    else:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE stadiu_list_documents SET downloaded_at = ? WHERE url = ?",
+                (now, url_pk),
+            )
+
+
+def stadiu_https_url_needs_refresh(href: str, min_interval_days: int) -> bool:
+    """Пора ли перекачать тот же https-URL (файл мог обновиться на сервере)."""
+    if min_interval_days <= 0:
+        return False
+    pk = resolve_stadiu_document_pk(href)
+    if not pk or not pk.startswith(("http://", "https://")):
+        return False
+    _sha, downloaded_at = get_stadiu_sha_and_downloaded_at(pk)
+    if not downloaded_at:
+        return True
+    raw = downloaded_at.strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return True
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    return now - dt >= timedelta(days=min_interval_days)
+
+
 def find_stadiu_canonical_url_by_sha256(content_sha256: str) -> str | None:
     with get_conn() as conn:
         if _USE_PG:
@@ -350,47 +472,121 @@ def insert_stadiu_document_meta(
             )
 
 
-def replace_stadiu_lines(doc_url: str, lines: Iterable[Mapping[str, Any]]) -> None:
-    if _USE_PG:
-        with get_conn() as conn:
+def _normalize_stadiu_cell(v: Any) -> str | None:
+    if v is None:
+        return None
+    if isinstance(v, str):
+        s = v.strip()
+        return s if s else None
+    return str(v)
+
+
+def _stadiu_line_tuple(row: Mapping[str, Any]) -> tuple[str | None, str | None, str | None]:
+    return (
+        _normalize_stadiu_cell(row["registered_date"]),
+        _normalize_stadiu_cell(row.get("termen_date")),
+        _normalize_stadiu_cell(row.get("solutie_order")),
+    )
+
+
+def merge_stadiu_lines(doc_url: str, lines: Iterable[Mapping[str, Any]]) -> None:
+    """
+    Слияние снимка PDF с БД по ключу (doc_url, dossier_ref).
+
+    - Строка есть в новом парсе и не было в БД → INSERT.
+    - Была и поля те же → ничего не делаем.
+    - Была, но изменились registered_date / termen_date / solutie_order → UPDATE только этих колонок.
+    - Была в БД, но в новом PDF досье нет → строку не удаляем.
+    """
+    by_ref: dict[str, Mapping[str, Any]] = {}
+    for row in lines:
+        dr = _normalize_stadiu_cell(row.get("dossier_ref"))
+        if not dr:
+            continue
+        by_ref[dr] = row
+
+    with get_conn() as conn:
+        if _USE_PG:
             with conn.cursor() as cur:
                 cur.execute(
-                    "DELETE FROM stadiu_list_lines WHERE doc_url = %s", (doc_url,)
+                    """
+                    SELECT dossier_ref, registered_date, termen_date, solutie_order
+                    FROM stadiu_list_lines WHERE doc_url = %s
+                    """,
+                    (doc_url,),
                 )
-                for row in lines:
-                    cur.execute(
+                existing_rows = cur.fetchall()
+                first_vals: dict[str, tuple[str | None, str | None, str | None]] = {}
+                for r in existing_rows:
+                    dr = _normalize_stadiu_cell(r[0])
+                    if not dr or dr in first_vals:
+                        continue
+                    first_vals[dr] = (
+                        _normalize_stadiu_cell(r[1]),
+                        _normalize_stadiu_cell(r[2]),
+                        _normalize_stadiu_cell(r[3]),
+                    )
+                for dr, row in by_ref.items():
+                    new_t = _stadiu_line_tuple(row)
+                    if dr not in first_vals:
+                        cur.execute(
+                            """
+                            INSERT INTO stadiu_list_lines (
+                                doc_url, dossier_ref, registered_date, termen_date, solutie_order
+                            )
+                            VALUES (%s, %s, %s, %s, %s)
+                            """,
+                            (doc_url, dr, new_t[0], new_t[1], new_t[2]),
+                        )
+                    elif first_vals[dr] != new_t:
+                        cur.execute(
+                            """
+                            UPDATE stadiu_list_lines SET
+                                registered_date = %s,
+                                termen_date = %s,
+                                solutie_order = %s
+                            WHERE doc_url = %s AND dossier_ref = %s
+                            """,
+                            (new_t[0], new_t[1], new_t[2], doc_url, dr),
+                        )
+        else:
+            existing_rows = conn.execute(
+                """
+                SELECT dossier_ref, registered_date, termen_date, solutie_order
+                FROM stadiu_list_lines WHERE doc_url = ?
+                """,
+                (doc_url,),
+            ).fetchall()
+            first_vals = {}
+            for r in existing_rows:
+                dr = _normalize_stadiu_cell(r[0])
+                if not dr or dr in first_vals:
+                    continue
+                first_vals[dr] = (
+                    _normalize_stadiu_cell(r[1]),
+                    _normalize_stadiu_cell(r[2]),
+                    _normalize_stadiu_cell(r[3]),
+                )
+            for dr, row in by_ref.items():
+                new_t = _stadiu_line_tuple(row)
+                if dr not in first_vals:
+                    conn.execute(
                         """
                         INSERT INTO stadiu_list_lines (
                             doc_url, dossier_ref, registered_date, termen_date, solutie_order
                         )
-                        VALUES (%s, %s, %s, %s, %s)
+                        VALUES (?, ?, ?, ?, ?)
                         """,
-                        (
-                            doc_url,
-                            row["dossier_ref"],
-                            row["registered_date"],
-                            row.get("termen_date"),
-                            row.get("solutie_order"),
-                        ),
+                        (doc_url, dr, new_t[0], new_t[1], new_t[2]),
                     )
-    else:
-        with get_conn() as conn:
-            conn.execute(
-                "DELETE FROM stadiu_list_lines WHERE doc_url = ?", (doc_url,)
-            )
-            for row in lines:
-                conn.execute(
-                    """
-                    INSERT INTO stadiu_list_lines (
-                        doc_url, dossier_ref, registered_date, termen_date, solutie_order
+                elif first_vals[dr] != new_t:
+                    conn.execute(
+                        """
+                        UPDATE stadiu_list_lines SET
+                            registered_date = ?,
+                            termen_date = ?,
+                            solutie_order = ?
+                        WHERE doc_url = ? AND dossier_ref = ?
+                        """,
+                        (new_t[0], new_t[1], new_t[2], doc_url, dr),
                     )
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        doc_url,
-                        row["dossier_ref"],
-                        row["registered_date"],
-                        row.get("termen_date"),
-                        row.get("solutie_order"),
-                    ),
-                )
