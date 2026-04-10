@@ -2,7 +2,7 @@
 PDF «Art-11-YYYY-Update-DD.MM.YYYY»: списки stadiu dosar (Art. 11).
 
 Колонки в документе ANC:
-  NR. DOSAR — N/RD/год_подачи (в PDF часто N\\RD\\год; порядковый N в году).
+  NR. DOSAR — N/RD/год или N\\RD\\год (в тексте pdfplumber встречаются оба варианта).
   DATA ÎNREGISTRĂRII — дата подачи документов.
   TERMEN — ориентировочная дата рассмотрения (часто не соблюдается); может быть пусто.
   SOLUTIE — номер приказа (формат …/P/год). Пусто = решение ещё не присвоено номер в этом списке.
@@ -17,28 +17,39 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-# Строка данных: досье, дата регистрации, остаток — TERMEN (дата?) и/или SOLUTIE (…/P/…)
+# Строка данных: досье (в PDF бывает 1\RD\2013 или 1/RD/2013), дата регистрации, остаток.
 _ROW_RE = re.compile(
-    r"^(\d+\\RD\\\d{4})\s+(\d{2}\.\d{2}\.\d{4})\s*(.*)$",
+    r"^(\d+[/\\]RD[/\\]\d{4})\s+(\d{2}\.\d{2}\.\d{4})\s*(.*)$",
+    re.IGNORECASE,
 )
 _DATE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
-# Номер приказа в SOLUTIE: 1061/P/2026
-_SOLUTIE_END = re.compile(r"(\d+/P/\d{4})\s*$")
+# SOLUȚIE: …/P/2026 или …/P/11.06.2015 (как в старых списках Art. 11)
+_SOLUTIE_END = re.compile(
+    r"(\d+/P/(?:\d{4}|\d{2}\.\d{2}\.\d{4}))\s*$",
+)
 
 _FILENAME_RE = re.compile(
     r"^Art-11-(\d{4})-Update-(\d{2}\.\d{2}\.\d{4})$",
+    re.IGNORECASE,
+)
+# Art._11_2013_Redobandire.pdf и похожие имена на сайте
+_FILENAME_LOOSE_RE = re.compile(
+    r"^Art[._-]+11[._-]+(\d{4})",
     re.IGNORECASE,
 )
 
 
 def parse_filename_meta(stem: str) -> dict[str, str | None]:
     m = _FILENAME_RE.match(stem)
-    if not m:
-        return {"list_year": None, "snapshot_update_date": None}
-    return {
-        "list_year": m.group(1),
-        "snapshot_update_date": m.group(2),
-    }
+    if m:
+        return {
+            "list_year": m.group(1),
+            "snapshot_update_date": m.group(2),
+        }
+    m2 = _FILENAME_LOOSE_RE.match(stem)
+    if m2:
+        return {"list_year": m2.group(1), "snapshot_update_date": None}
+    return {"list_year": None, "snapshot_update_date": None}
 
 
 def meta_from_art11_pdf_url(url: str) -> dict[str, str | None]:
@@ -94,9 +105,10 @@ def parse_art11_submission_pdf(path: Path) -> tuple[dict[str, Any], list[dict[st
                 if not m:
                     continue
                 termen, solutie = split_termen_solutie(m.group(3))
+                dr = m.group(1).replace("\\", "/")
                 rows.append(
                     {
-                        "dossier_ref": m.group(1).replace("\\", "/"),
+                        "dossier_ref": dr,
                         "registered_date": m.group(2),
                         "termen_date": termen,
                         "solutie_order": solutie,
