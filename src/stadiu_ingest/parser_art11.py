@@ -108,6 +108,13 @@ def parse_art11_submission_pdf(path: Path) -> tuple[dict[str, Any], list[dict[st
     return meta, rows
 
 
+def _parse_art11_submission_pdf_worker(
+    path_str: str,
+) -> tuple[dict[str, Any], list[dict[str, str | None]]]:
+    """Топ-уровень для pickle/multiprocessing (нельзя nested-функцию в Pool)."""
+    return parse_art11_submission_pdf(Path(path_str))
+
+
 def parse_art11_submission_pdf_isolated(
     path: Path,
 ) -> tuple[dict[str, Any], list[dict[str, str | None]]]:
@@ -118,13 +125,9 @@ def parse_art11_submission_pdf_isolated(
     import multiprocessing as mp
     import sys
 
-    def _worker(p: str) -> tuple[dict[str, Any], list[dict[str, str | None]]]:
-        from pathlib import Path as P
-
-        from stadiu_ingest.parser_art11 import parse_art11_submission_pdf as _parse
-
-        return _parse(P(p))
-
     ctx = mp.get_context("spawn" if sys.platform == "win32" else "fork")
     with ctx.Pool(1, maxtasksperchild=1) as pool:
-        return pool.apply(_worker, (str(path.resolve()),))
+        return pool.apply(
+            _parse_art11_submission_pdf_worker,
+            (str(path.resolve()),),
+        )
