@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS stadiu_list_lines (
     doc_url TEXT NOT NULL,
     dossier_ref TEXT NOT NULL,
     registered_date TEXT,
-    termen_solutie TEXT,
+    termen_date TEXT,
+    solutie_order TEXT,
     FOREIGN KEY (doc_url) REFERENCES stadiu_list_documents(url)
 );
 
@@ -101,7 +102,8 @@ CREATE TABLE IF NOT EXISTS stadiu_list_lines (
     doc_url TEXT NOT NULL REFERENCES stadiu_list_documents(url) ON DELETE CASCADE,
     dossier_ref TEXT NOT NULL,
     registered_date TEXT,
-    termen_solutie TEXT
+    termen_date TEXT,
+    solutie_order TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_stadiu_lines_doc ON stadiu_list_lines(doc_url);
@@ -127,16 +129,78 @@ def get_conn() -> Generator[Any, None, None]:
             conn.close()
 
 
+def _migrate_stadiu_lines_old_column(conn: Any, *, is_pg: bool) -> None:
+    """Было termen_solutie одной строкой → termen_date + solutie_order."""
+    from stadiu_ingest.parser_art11 import split_termen_solutie
+
+    if is_pg:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'stadiu_list_lines'
+                """
+            )
+            cols = {r[0] for r in cur.fetchall()}
+            if not cols or "termen_date" in cols:
+                return
+            if "termen_solutie" not in cols:
+                return
+            cur.execute("ALTER TABLE stadiu_list_lines ADD COLUMN termen_date TEXT")
+            cur.execute("ALTER TABLE stadiu_list_lines ADD COLUMN solutie_order TEXT")
+            cur.execute(
+                "SELECT id, termen_solutie FROM stadiu_list_lines WHERE termen_solutie IS NOT NULL"
+            )
+            for rid, ts in cur.fetchall():
+                td, so = split_termen_solutie(ts)
+                cur.execute(
+                    "UPDATE stadiu_list_lines SET termen_date = %s, solutie_order = %s WHERE id = %s",
+                    (td, so, rid),
+                )
+            cur.execute("ALTER TABLE stadiu_list_lines DROP COLUMN termen_solutie")
+    else:
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(stadiu_list_lines)")
+        cols = {r[1] for r in cur.fetchall()}
+        if not cols or "termen_date" in cols:
+            return
+        if "termen_solutie" not in cols:
+            return
+        cur.execute("ALTER TABLE stadiu_list_lines ADD COLUMN termen_date TEXT")
+        cur.execute("ALTER TABLE stadiu_list_lines ADD COLUMN solutie_order TEXT")
+        cur.execute("SELECT id, termen_solutie FROM stadiu_list_lines")
+        for rid, ts in cur.fetchall():
+            if ts:
+                td, so = split_termen_solutie(ts)
+                cur.execute(
+                    "UPDATE stadiu_list_lines SET termen_date = ?, solutie_order = ? WHERE id = ?",
+                    (td, so, rid),
+                )
+        try:
+            cur.execute("ALTER TABLE stadiu_list_lines DROP COLUMN termen_solutie")
+        except sqlite3.OperationalError:
+            pass
+
+
+def _exec_pg_ddl(conn: Any, ddl: str) -> None:
+    with conn.cursor() as cur:
+        for part in ddl.split(";"):
+            stmt = part.strip()
+            if stmt:
+                cur.execute(stmt + ";")
+
+
 def init_db() -> None:
     if _USE_PG:
         with _pg_connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(_POSTGRES_DDL)
+            _exec_pg_ddl(conn, _POSTGRES_DDL)
+            _migrate_stadiu_lines_old_column(conn, is_pg=True)
             conn.commit()
     else:
         SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(SQLITE_PATH) as conn:
             conn.executescript(_SQLITE_DDL)
+            _migrate_stadiu_lines_old_column(conn, is_pg=False)
 
 
 def known_stadiu_urls() -> set[str]:
@@ -226,14 +290,17 @@ def replace_stadiu_lines(doc_url: str, lines: Iterable[dict[str, str]]) -> None:
                 for row in lines:
                     cur.execute(
                         """
-                        INSERT INTO stadiu_list_lines (doc_url, dossier_ref, registered_date, termen_solutie)
-                        VALUES (%s, %s, %s, %s)
+                        INSERT INTO stadiu_list_lines (
+                            doc_url, dossier_ref, registered_date, termen_date, solutie_order
+                        )
+                        VALUES (%s, %s, %s, %s, %s)
                         """,
                         (
                             doc_url,
                             row["dossier_ref"],
                             row["registered_date"],
-                            row["termen_solutie"],
+                            row.get("termen_date"),
+                            row.get("solutie_order"),
                         ),
                     )
     else:
@@ -244,13 +311,16 @@ def replace_stadiu_lines(doc_url: str, lines: Iterable[dict[str, str]]) -> None:
             for row in lines:
                 conn.execute(
                     """
-                    INSERT INTO stadiu_list_lines (doc_url, dossier_ref, registered_date, termen_solutie)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO stadiu_list_lines (
+                        doc_url, dossier_ref, registered_date, termen_date, solutie_order
+                    )
+                    VALUES (?, ?, ?, ?, ?)
                     """,
                     (
                         doc_url,
                         row["dossier_ref"],
                         row["registered_date"],
-                        row["termen_solutie"],
+                        row.get("termen_date"),
+                        row.get("solutie_order"),
                     ),
                 )

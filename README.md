@@ -23,6 +23,14 @@ PYTHONPATH=src python ingest_stadiu_pdfs.py /path/to/Art-11-2024-Update-08.04.20
 ## Таблицы
 
 - `stadiu_list_documents` — метаданные снимка (год списка, дата update из имени файла, sha256).
-- `stadiu_list_lines` — `dossier_ref`, `registered_date`, `termen_solutie`.
+- `stadiu_list_lines` — строка списка подачи:
+  - `dossier_ref` — номер дела (`N/RD/год` подачи),
+  - `registered_date` — дата регистрации документов (DATA ÎNREGISTRĂRII),
+  - `termen_date` — ориентировочный срок рассмотрения (часто не соблюдается),
+  - `solutie_order` — номер приказа (`…/P/год`), если уже присвоен в этом списке.
 
-Имена не пересекаются с `pdf_documents` / `pdf_dossier_lines` в `cetatenie-mvp`.
+**Смысл:** пустой `solutie_order` — решение в PDF ещё не отражено номером приказа. Отказы ANC часто **не** публикуются отдельным PDF-приказом: если позже в базе приказов (`cetatenie-mvp`) не находится соответствующий номер — по бизнес-логике это может трактоваться как отказ (сопоставление — отдельными запросами/SQL).
+
+Имена таблиц не пересекаются с `pdf_documents` / `pdf_dossier_lines` в `cetatenie-mvp`.
+
+После обновления схемы со старой колонки `termen_solutie` выполните `init_db()` (при старте ingest) и при необходимости `ingest_stadiu_pdfs.py --force …` для перезаливки строк.
