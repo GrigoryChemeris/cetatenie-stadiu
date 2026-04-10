@@ -14,12 +14,25 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, unquote, urldefrag, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 
 STADIU_DOSAR_PAGE_URL = "https://cetatenie.just.ro/stadiu-dosar/"
 ART11_PANEL_ID = "articolul-11-tab"
+
+
+def canonicalize_pdf_url(url: str) -> str:
+    """Как в cetatenie-mvp list_snapshot_discover: сравнение и дедуп URL."""
+    raw, _frag = urldefrag(url.strip())
+    p = urlparse(raw)
+    scheme = (p.scheme or "https").lower()
+    netloc = (p.netloc or "").lower()
+    path = unquote(p.path or "")
+    path = re.sub(r"/{2,}", "/", path)
+    if not path.startswith("/"):
+        path = "/" + path if path else "/"
+    return urlunparse((scheme, netloc, path, "", p.query, ""))
 
 
 def extract_art11_pdf_links_from_html(
@@ -44,7 +57,7 @@ def extract_art11_pdf_links_from_html(
         href = str(a.get("href", "")).strip()
         if not href.lower().split("?", 1)[0].endswith(".pdf"):
             continue
-        full = urljoin(base_url, href)
+        full = canonicalize_pdf_url(urljoin(base_url, href))
         if full in seen:
             continue
         seen.add(full)

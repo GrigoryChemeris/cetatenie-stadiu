@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Обёртка для Docker/Railway: тот же цикл, что run_stadiu_scheduler.py."""
+"""Фоновый цикл: stadiu-dosar → Art. 11 PDF → БД."""
 
 from __future__ import annotations
 

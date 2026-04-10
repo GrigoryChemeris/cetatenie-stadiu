@@ -4,7 +4,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Generator, Iterable
+from typing import Any, Generator, Iterable, Mapping
 
 from stadiu_ingest.config import DATABASE_URL, PG_CONNECT_TIMEOUT, SQLITE_PATH
 
@@ -82,6 +82,13 @@ CREATE TABLE IF NOT EXISTS stadiu_list_lines (
 );
 
 CREATE INDEX IF NOT EXISTS idx_stadiu_lines_doc ON stadiu_list_lines(doc_url);
+
+CREATE TABLE IF NOT EXISTS stadiu_url_aliases (
+    list_url TEXT PRIMARY KEY,
+    content_sha256 TEXT NOT NULL,
+    canonical_url TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_stadiu_aliases_canonical ON stadiu_url_aliases(canonical_url);
 """
 
 _POSTGRES_DDL = """
@@ -107,6 +114,13 @@ CREATE TABLE IF NOT EXISTS stadiu_list_lines (
 );
 
 CREATE INDEX IF NOT EXISTS idx_stadiu_lines_doc ON stadiu_list_lines(doc_url);
+
+CREATE TABLE IF NOT EXISTS stadiu_url_aliases (
+    list_url TEXT PRIMARY KEY,
+    content_sha256 TEXT NOT NULL,
+    canonical_url TEXT NOT NULL REFERENCES stadiu_list_documents(url) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_stadiu_aliases_canonical ON stadiu_url_aliases(canonical_url);
 """
 
 
@@ -207,11 +221,67 @@ def known_stadiu_urls() -> set[str]:
     with get_conn() as conn:
         if _USE_PG:
             with conn.cursor() as cur:
-                cur.execute("SELECT url FROM stadiu_list_documents")
+                cur.execute(
+                    """
+                    SELECT url FROM stadiu_list_documents
+                    UNION
+                    SELECT list_url FROM stadiu_url_aliases
+                    """
+                )
                 rows = cur.fetchall()
         else:
-            rows = conn.execute("SELECT url FROM stadiu_list_documents").fetchall()
+            rows = conn.execute(
+                """
+                SELECT url FROM stadiu_list_documents
+                UNION
+                SELECT list_url FROM stadiu_url_aliases
+                """
+            ).fetchall()
     return {r[0] for r in rows}
+
+
+def find_stadiu_canonical_url_by_sha256(content_sha256: str) -> str | None:
+    with get_conn() as conn:
+        if _USE_PG:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT url FROM stadiu_list_documents WHERE content_sha256 = %s LIMIT 1",
+                    (content_sha256,),
+                )
+                row = cur.fetchone()
+        else:
+            row = conn.execute(
+                "SELECT url FROM stadiu_list_documents WHERE content_sha256 = ? LIMIT 1",
+                (content_sha256,),
+            ).fetchone()
+    return row[0] if row else None
+
+
+def register_stadiu_pdf_url_alias(
+    list_url: str, content_sha256: str, canonical_url: str
+) -> None:
+    if list_url == canonical_url:
+        return
+    if _USE_PG:
+        sql = """
+        INSERT INTO stadiu_url_aliases (list_url, content_sha256, canonical_url)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (list_url) DO UPDATE SET
+            content_sha256 = EXCLUDED.content_sha256,
+            canonical_url = EXCLUDED.canonical_url
+        """
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (list_url, content_sha256, canonical_url))
+    else:
+        with get_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO stadiu_url_aliases (list_url, content_sha256, canonical_url)
+                VALUES (?, ?, ?)
+                """,
+                (list_url, content_sha256, canonical_url),
+            )
 
 
 def insert_stadiu_document_meta(
@@ -280,7 +350,7 @@ def insert_stadiu_document_meta(
             )
 
 
-def replace_stadiu_lines(doc_url: str, lines: Iterable[dict[str, str]]) -> None:
+def replace_stadiu_lines(doc_url: str, lines: Iterable[Mapping[str, Any]]) -> None:
     if _USE_PG:
         with get_conn() as conn:
             with conn.cursor() as cur:

@@ -1,50 +1,50 @@
 # cetatenie-stadiu
 
-Отдельный сервис для PDF **списков подачи** (stadiu dosar, **Art. 11**): парсинг и хранение строк в Postgres/SQLite. Не зависит от `cetatenie-mvp` (приказы).
+Отдельный сервис для PDF **списков подачи** (stadiu dosar, **Art. 11**): Selenium → скачивание PDF → парсинг → Postgres/SQLite. Не зависит от `cetatenie-mvp` (приказы).
+
+**User-Agent:** свой пул в `src/stadiu_ingest/user_agents.py` (не те же строки, что в первом сервисе).
+
+**Логика как у первого сервиса:** Chromium, ожидание anti-bot / появления ссылок `.pdf`, скачивание в temp, SHA-256, дедуп по URL и по содержимому (`stadiu_url_aliases`), отдельный UA на каждый PDF.
 
 ## Страница stadiu-dosar и артикул 11
 
-**Автоскачивание страницы в облаке пока не делалось** — сервис поднимает только placeholder-процесс. Импорт идёт с **локальных PDF** или вручную скачанных файлов.
+На https://cetatenie.just.ro/stadiu-dosar/ несколько вкладок. В DOM все панели уже есть; **Art. 11** — только блок **`id="articolul-11-tab"`** (`extract_art11_pdf_links_from_html`).
 
-На https://cetatenie.just.ro/stadiu-dosar/ несколько вкладок (Art. 8, 8.1, 10, 11, …). В сохранённом HTML (и в `page_source` после Selenium) контент всех вкладок уже лежит в DOM. **Только Art. 11** выбирается по панели с id **`articolul-11-tab`** (виджет Essential Addons / Elementor). Остальные артикулы — другие `id` (`articolul-8-tab`, …), мы их не парсим.
+## Локально: один прогон (Selenium)
 
-Из сохранённой страницы («Сохранить как…»):
+Нужны Chrome/Chromedriver или пути в env (как в первом проекте).
+
+```bash
+cd cetatenie-stadiu
+source .venv/bin/activate
+export DATABASE_URL='postgresql://…'   # или без него → SQLite
+PYTHONPATH=src python run_stadiu_once.py
+```
+
+## Локально: только PDF с диска
+
+```bash
+PYTHONPATH=src python ingest_stadiu_pdfs.py /path/to/Art-11-2024-Update-08.04.2026.pdf
+```
+
+## Список URL из сохранённого HTML
 
 ```bash
 PYTHONPATH=src python list_art11_pdfs_from_html.py ~/Downloads/stadiu-dosar.html
 ```
 
-Список URL только для вкладки ARTICOLUL 11 (без PDF других статей).
-
-## Локально
-
-```bash
-cd cetatenie-stadiu
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-export DATABASE_URL='postgresql://…'
-PYTHONPATH=src python ingest_stadiu_pdfs.py /path/to/Art-11-2024-Update-08.04.2026.pdf
-```
-
 ## Railway (отдельный блок)
 
-1. **New** → **GitHub** → репозиторий только с этой папкой (или монорепо с **Root Directory** = `cetatenie-stadiu`).
-2. В **Variables** задайте тот же `DATABASE_URL`, что у Postgres (или ссылку через **Reference**), чтобы таблицы `stadiu_*` жили в общей БД.
-3. Деплой поднимает `run_stadiu_service.py` (пока только heartbeat). Разовый импорт: **Railway → Shell / `railway run`**:
+1. Репозиторий / **Root Directory** = `cetatenie-stadiu`.
+2. `DATABASE_URL` → тот же Postgres, что у `cetatenie-mvp` (таблицы `stadiu_*`, `stadiu_url_aliases`).
+3. **Dockerfile** поднимает `run_stadiu_scheduler.py` (цикл прогонов + пауза **30–45** мин по умолчанию).
 
-   `PYTHONPATH=src python ingest_stadiu_pdfs.py /tmp/file.pdf`
+Переменные: см. `.env.example`.
 
 ## Таблицы
 
-- `stadiu_list_documents` — метаданные снимка (год списка, дата update из имени файла, sha256).
-- `stadiu_list_lines` — строка списка подачи:
-  - `dossier_ref` — номер дела (`N/RD/год` подачи),
-  - `registered_date` — дата регистрации документов (DATA ÎNREGISTRĂRII),
-  - `termen_date` — ориентировочный срок рассмотрения (часто не соблюдается),
-  - `solutie_order` — номер приказа (`…/P/год`), если уже присвоен в этом списке.
+- `stadiu_list_documents` — ключ `url`: для с сайта это **https URL файла**, для локального импорта — `local:<sha256>`.
+- `stadiu_list_lines` — строки списка (`dossier_ref`, `registered_date`, `termen_date`, `solutie_order`).
+- `stadiu_url_aliases` — тот же PDF по байтам уже сохранён под другим `url`; ссылка со страницы ведёт на каноническую запись (как `pdf_url_aliases` в первом сервисе).
 
-**Смысл:** пустой `solutie_order` — решение в PDF ещё не отражено номером приказа. Отказы ANC часто **не** публикуются отдельным PDF-приказом: если позже в базе приказов (`cetatenie-mvp`) не находится соответствующий номер — по бизнес-логике это может трактоваться как отказ (сопоставление — отдельными запросами/SQL).
-
-Имена таблиц не пересекаются с `pdf_documents` / `pdf_dossier_lines` в `cetatenie-mvp`.
-
-После обновления схемы со старой колонки `termen_solutie` выполните `init_db()` (при старте ingest) и при необходимости `ingest_stadiu_pdfs.py --force …` для перезаливки строк.
+Итог по отказам / `solutie_order` — см. прежний текст в `parser_art11.py` и комментарии в README ранее (сопоставление с приказами — отдельными запросами).

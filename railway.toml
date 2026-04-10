@@ -3,6 +3,6 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "python run_stadiu_service.py"
+startCommand = "python run_stadiu_scheduler.py"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5

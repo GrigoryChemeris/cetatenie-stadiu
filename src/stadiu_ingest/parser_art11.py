@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 # Строка данных: досье, дата регистрации, остаток — TERMEN (дата?) и/или SOLUTIE (…/P/…)
 _ROW_RE = re.compile(
@@ -38,6 +39,12 @@ def parse_filename_meta(stem: str) -> dict[str, str | None]:
         "list_year": m.group(1),
         "snapshot_update_date": m.group(2),
     }
+
+
+def meta_from_art11_pdf_url(url: str) -> dict[str, str | None]:
+    """Год/update из имени файла в URL, если локальное имя после скачивания другое."""
+    path = unquote(urlparse(url).path)
+    return parse_filename_meta(Path(path).stem)
 
 
 def split_termen_solutie(tail: str) -> tuple[str | None, str | None]:
