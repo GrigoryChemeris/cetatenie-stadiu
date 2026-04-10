@@ -2,10 +2,10 @@
 PDF «Art-11-YYYY-Update-DD.MM.YYYY»: списки stadiu dosar (Art. 11).
 
 Колонки в документе ANC:
-  NR. DOSAR — N/RD/год или N\\RD\\год (в тексте pdfplumber встречаются оба варианта).
+  NR. DOSAR — N/RD/год, реже «1 /RD/2012» с пробелами; в тексте бывает N\\RD\\год.
   DATA ÎNREGISTRĂRII — дата подачи документов.
   TERMEN — ориентировочная дата рассмотрения (часто не соблюдается); может быть пусто.
-  SOLUTIE — номер приказа (формат …/P/год). Пусто = решение ещё не присвоено номер в этом списке.
+  SOLUTIE / SOLUȚIE — …/P/год, …/P/дд.мм.гггг или редко «211/P 12.11.2010» (пробел после P).
     Отказы часто не публикуются отдельным приказом: если в списке приказов (cetatenie-mvp)
     нет соответствующего номера — по смыслу это отказ (логику сопоставления делать в SQL/отчётах).
 """
@@ -17,15 +17,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-# Строка данных: досье (в PDF бывает 1\RD\2013 или 1/RD/2013), дата регистрации, остаток.
+# Досье: 1/RD/2013, 1\RD\2022, «1 /RD/2012» (пробелы вокруг слэшей).
 _ROW_RE = re.compile(
-    r"^(\d+[/\\]RD[/\\]\d{4})\s+(\d{2}\.\d{2}\.\d{4})\s*(.*)$",
+    r"^\s*(\d+)\s*[/\\]\s*RD\s*[/\\]\s*(\d{4})\s+(\d{2}\.\d{2}\.\d{4})\s*(.*)$",
     re.IGNORECASE,
 )
 _DATE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
-# SOLUȚIE: …/P/2026 или …/P/11.06.2015 (как в старых списках Art. 11)
+# Приказ в хвосте: …/P/2024, …/P/06.08.2014, …/P 16.12.2010 (Redobandire 2010)
 _SOLUTIE_END = re.compile(
-    r"(\d+/P/(?:\d{4}|\d{2}\.\d{2}\.\d{4}))\s*$",
+    r"(\d+/P(?:/\d{4}|/\d{2}\.\d{2}\.\d{4}|\s+\d{2}\.\d{2}\.\d{4}))\s*$",
 )
 
 _FILENAME_RE = re.compile(
@@ -99,17 +99,19 @@ def parse_art11_submission_pdf(path: Path) -> tuple[dict[str, Any], list[dict[st
                     continue
                 if "DATA" in line and "ÎNREGISTRĂRII" in line:
                     continue
-                if "TERMEN" in line and "SOLUTIE" in line:
+                if "TERMEN" in line and (
+                    "SOLUTIE" in line or "SOLUȚIE" in line or "SOLUŢIE" in line
+                ):
                     continue
                 m = _ROW_RE.match(line)
                 if not m:
                     continue
-                termen, solutie = split_termen_solutie(m.group(3))
-                dr = m.group(1).replace("\\", "/")
+                termen, solutie = split_termen_solutie(m.group(4))
+                dr = f"{m.group(1)}/RD/{m.group(2)}"
                 rows.append(
                     {
                         "dossier_ref": dr,
-                        "registered_date": m.group(2),
+                        "registered_date": m.group(3),
                         "termen_date": termen,
                         "solutie_order": solutie,
                     }
