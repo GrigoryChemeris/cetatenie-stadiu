@@ -240,6 +240,59 @@ def known_stadiu_urls() -> set[str]:
     return {r[0] for r in rows}
 
 
+def find_stadiu_urls_by_source_filename(filename: str) -> list[str]:
+    """Точное совпадение source_filename (как после скачивания с сайта)."""
+    fn = (filename or "").strip()
+    if not fn:
+        return []
+    with get_conn() as conn:
+        if _USE_PG:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT url FROM stadiu_list_documents
+                    WHERE TRIM(source_filename) = %s
+                    ORDER BY url
+                    """,
+                    (fn,),
+                )
+                rows = cur.fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT url FROM stadiu_list_documents
+                WHERE TRIM(source_filename) = ?
+                ORDER BY url
+                """,
+                (fn,),
+            ).fetchall()
+    return [str(r[0]).strip() for r in rows if r and r[0]]
+
+
+def get_stadiu_source_filename_for_url(canonical_url: str) -> str | None:
+    """Имя файла из stadiu_list_documents для канонического url."""
+    u = (canonical_url or "").strip()
+    if not u:
+        return None
+    with get_conn() as conn:
+        if _USE_PG:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT source_filename FROM stadiu_list_documents WHERE url = %s LIMIT 1",
+                    (u,),
+                )
+                row = cur.fetchone()
+        else:
+            row = conn.execute(
+                "SELECT source_filename FROM stadiu_list_documents WHERE url = ? LIMIT 1",
+                (u,),
+            ).fetchone()
+    if not row or row[0] is None:
+        return None
+    s = str(row[0]).strip()
+    return s if s else None
+
+
 def list_stadiu_document_urls_by_list_year() -> dict[str, set[str]]:
     """
     list_year → множество URL документов. Если на сайте сменили имя PDF (новый href) для того же года,

@@ -27,6 +27,20 @@ PYTHONPATH=src python run_stadiu_once.py
 PYTHONPATH=src python ingest_stadiu_pdfs.py /path/to/Art-11-2024-Update-08.04.2026.pdf
 ```
 
+## Перепарсить уже известный https-документ (тот же PDF на сервере)
+
+`run_stadiu_once` не вызывает парсер, если sha256 файла не изменился. После правок `parser_art11.py` для Redobandire и т.п.:
+
+```bash
+PYTHONPATH=src python reparse_stadiu_https.py \
+  --filename Art._11_2010_Redobandire.pdf \
+  --filename Art._11_2012_Redobandire.pdf \
+  --filename Art._11_2013_Redobandire.pdf \
+  --local-dir ~/Downloads
+```
+
+Без `--local-dir` скрипт качает по URL из БД: при `STADIU_PREFER_HTTP_PDF=1` — только HTTP; иначе нужен Selenium (как у `run_stadiu_once`). Если все три PDF уже в каталоге и имена совпадают с `source_filename`, достаточно `--local-dir` без Selenium.
+
 ## Список URL из сохранённого HTML
 
 ```bash
