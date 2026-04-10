@@ -24,7 +24,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY run_stadiu_scheduler.py run_stadiu_once.py run_stadiu_service.py ./
-COPY ingest_stadiu_pdfs.py list_art11_pdfs_from_html.py ./
+COPY ingest_stadiu_pdfs.py list_art11_pdfs_from_html.py reparse_stadiu_https.py ./
 COPY src ./src
 
 CMD ["python", "run_stadiu_scheduler.py"]
