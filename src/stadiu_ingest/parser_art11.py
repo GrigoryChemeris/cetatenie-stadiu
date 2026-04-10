@@ -82,14 +82,14 @@ def split_termen_solutie(tail: str) -> tuple[str | None, str | None]:
     return termen, solutie
 
 
-def parse_art11_submission_pdf(path: Path) -> tuple[dict[str, Any], list[dict[str, str | None]]]:
+def parse_art11_submission_pdf(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     import pdfplumber
 
     stem = path.stem
     meta = parse_filename_meta(stem)
     meta["source_filename"] = path.name
 
-    rows: list[dict[str, str | None]] = []
+    rows: list[dict[str, Any]] = []
     with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
             text = page.extract_text() or ""
@@ -107,10 +107,13 @@ def parse_art11_submission_pdf(path: Path) -> tuple[dict[str, Any], list[dict[st
                 if not m:
                     continue
                 termen, solutie = split_termen_solutie(m.group(4))
-                dr = f"{m.group(1)}/RD/{m.group(2)}"
+                num_s, year_s = m.group(1), m.group(2)
+                dr = f"{num_s}/RD/{year_s}"
                 rows.append(
                     {
                         "dossier_ref": dr,
+                        "dossier_num": int(num_s),
+                        "dossier_year": int(year_s),
                         "registered_date": m.group(3),
                         "termen_date": termen,
                         "solutie_order": solutie,
@@ -124,14 +127,14 @@ def parse_art11_submission_pdf(path: Path) -> tuple[dict[str, Any], list[dict[st
 
 def _parse_art11_submission_pdf_worker(
     path_str: str,
-) -> tuple[dict[str, Any], list[dict[str, str | None]]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Топ-уровень для pickle/multiprocessing (нельзя nested-функцию в Pool)."""
     return parse_art11_submission_pdf(Path(path_str))
 
 
 def parse_art11_submission_pdf_isolated(
     path: Path,
-) -> tuple[dict[str, Any], list[dict[str, str | None]]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """
     Парсинг в отдельном процессе (maxtasksperchild=1): после завершения воркера
     освобождается RSS pdfplumber/pdfium — полезно на Railway с малым лимитом RAM.

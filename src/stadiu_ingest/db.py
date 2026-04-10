@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -9,6 +10,23 @@ from typing import Any, Generator, Iterable, Mapping
 from stadiu_ingest.config import DATABASE_URL, PG_CONNECT_TIMEOUT, SQLITE_PATH
 
 _USE_PG = bool(DATABASE_URL)
+
+# N/RD/год (после нормализации в парсере)
+_DOSSIER_REF_PARTS = re.compile(r"^(\d+)/RD/(\d{4})\s*$", re.IGNORECASE)
+
+
+def parse_dossier_ref_parts(dossier_ref: str | None) -> tuple[int | None, int | None]:
+    """Номер досье и год из канонического dossier_ref."""
+    dr = (dossier_ref or "").strip()
+    if not dr:
+        return None, None
+    m = _DOSSIER_REF_PARTS.match(dr)
+    if not m:
+        return None, None
+    try:
+        return int(m.group(1)), int(m.group(2))
+    except ValueError:
+        return None, None
 
 
 def _utc_now_iso() -> str:
@@ -75,6 +93,8 @@ CREATE TABLE IF NOT EXISTS stadiu_list_lines (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     doc_url TEXT NOT NULL,
     dossier_ref TEXT NOT NULL,
+    dossier_num INTEGER,
+    dossier_year INTEGER,
     registered_date TEXT,
     termen_date TEXT,
     solutie_order TEXT,
@@ -108,6 +128,8 @@ CREATE TABLE IF NOT EXISTS stadiu_list_lines (
     id SERIAL PRIMARY KEY,
     doc_url TEXT NOT NULL REFERENCES stadiu_list_documents(url) ON DELETE CASCADE,
     dossier_ref TEXT NOT NULL,
+    dossier_num INTEGER,
+    dossier_year INTEGER,
     registered_date TEXT,
     termen_date TEXT,
     solutie_order TEXT
@@ -196,6 +218,115 @@ def _migrate_stadiu_lines_old_column(conn: Any, *, is_pg: bool) -> None:
             pass
 
 
+def _migrate_stadiu_lines_dossier_columns(conn: Any, *, is_pg: bool) -> None:
+    """dossier_num / dossier_year + индексы для сортировки по году и номеру."""
+
+    def _backfill_lines(cursor: Any, sql_select: str, is_pg_inner: bool) -> None:
+        placeholder = "%s" if is_pg_inner else "?"
+        cursor.execute(sql_select)
+        batch: list[tuple[int | None, int | None, int]] = []
+        for rid, dr in cursor.fetchall():
+            n, y = parse_dossier_ref_parts(dr)
+            batch.append((n, y, rid))
+            if len(batch) >= 2000:
+                cursor.executemany(
+                    f"""
+                    UPDATE stadiu_list_lines SET dossier_num = {placeholder},
+                        dossier_year = {placeholder}
+                    WHERE id = {placeholder}
+                    """,
+                    batch,
+                )
+                batch.clear()
+        if batch:
+            cursor.executemany(
+                f"""
+                UPDATE stadiu_list_lines SET dossier_num = {placeholder},
+                    dossier_year = {placeholder}
+                WHERE id = {placeholder}
+                """,
+                batch,
+            )
+
+    if is_pg:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'stadiu_list_lines'
+                """
+            )
+            line_cols = {r[0] for r in cur.fetchall()}
+            if not line_cols:
+                return
+            added = False
+            if "dossier_year" not in line_cols:
+                cur.execute(
+                    "ALTER TABLE stadiu_list_lines ADD COLUMN dossier_num INTEGER"
+                )
+                cur.execute(
+                    "ALTER TABLE stadiu_list_lines ADD COLUMN dossier_year INTEGER"
+                )
+                added = True
+            if added:
+                _backfill_lines(cur, "SELECT id, dossier_ref FROM stadiu_list_lines", True)
+            else:
+                _backfill_lines(
+                    cur,
+                    """
+                    SELECT id, dossier_ref FROM stadiu_list_lines
+                    WHERE dossier_num IS NULL OR dossier_year IS NULL
+                    """,
+                    True,
+                )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_stadiu_lines_doc_year_num
+                ON stadiu_list_lines (doc_url, dossier_year, dossier_num)
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_stadiu_documents_list_year_url
+                ON stadiu_list_documents (list_year, url)
+                """
+            )
+    else:
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(stadiu_list_lines)")
+        line_cols = {r[1] for r in cur.fetchall()}
+        if not line_cols:
+            return
+        added = False
+        if "dossier_year" not in line_cols:
+            cur.execute("ALTER TABLE stadiu_list_lines ADD COLUMN dossier_num INTEGER")
+            cur.execute("ALTER TABLE stadiu_list_lines ADD COLUMN dossier_year INTEGER")
+            added = True
+        if added:
+            _backfill_lines(cur, "SELECT id, dossier_ref FROM stadiu_list_lines", False)
+        else:
+            _backfill_lines(
+                cur,
+                """
+                SELECT id, dossier_ref FROM stadiu_list_lines
+                WHERE dossier_num IS NULL OR dossier_year IS NULL
+                """,
+                False,
+            )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_stadiu_lines_doc_year_num
+            ON stadiu_list_lines (doc_url, dossier_year, dossier_num)
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_stadiu_documents_list_year_url
+            ON stadiu_list_documents (list_year, url)
+            """
+        )
+
+
 def _exec_pg_ddl(conn: Any, ddl: str) -> None:
     with conn.cursor() as cur:
         for part in ddl.split(";"):
@@ -209,12 +340,14 @@ def init_db() -> None:
         with _pg_connect() as conn:
             _exec_pg_ddl(conn, _POSTGRES_DDL)
             _migrate_stadiu_lines_old_column(conn, is_pg=True)
+            _migrate_stadiu_lines_dossier_columns(conn, is_pg=True)
             conn.commit()
     else:
         SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(SQLITE_PATH) as conn:
             conn.executescript(_SQLITE_DDL)
             _migrate_stadiu_lines_old_column(conn, is_pg=False)
+            _migrate_stadiu_lines_dossier_columns(conn, is_pg=False)
 
 
 def known_stadiu_urls() -> set[str]:
@@ -542,13 +675,32 @@ def _stadiu_line_tuple(row: Mapping[str, Any]) -> tuple[str | None, str | None, 
     )
 
 
+def _dossier_num_year_from_row(row: Mapping[str, Any], dossier_ref: str) -> tuple[int | None, int | None]:
+    n_raw = row.get("dossier_num")
+    y_raw = row.get("dossier_year")
+    if n_raw is not None and y_raw is not None:
+        try:
+            return int(n_raw), int(y_raw)
+        except (TypeError, ValueError):
+            pass
+    return parse_dossier_ref_parts(dossier_ref)
+
+
+def _stadiu_line_snapshot(
+    row: Mapping[str, Any], dossier_ref: str
+) -> tuple[str | None, str | None, str | None, int | None, int | None]:
+    reg, term, sol = _stadiu_line_tuple(row)
+    n, y = _dossier_num_year_from_row(row, dossier_ref)
+    return (reg, term, sol, n, y)
+
+
 def merge_stadiu_lines(doc_url: str, lines: Iterable[Mapping[str, Any]]) -> None:
     """
     Слияние снимка PDF с БД по ключу (doc_url, dossier_ref).
 
     - Строка есть в новом парсе и не было в БД → INSERT.
     - Была и поля те же → ничего не делаем.
-    - Была, но изменились registered_date / termen_date / solutie_order → UPDATE только этих колонок.
+    - Была, но изменились даты / решение / dossier_num|year → UPDATE.
     - Была в БД, но в новом PDF досье нет → строку не удаляем.
     """
     by_ref: dict[str, Mapping[str, Any]] = {}
@@ -563,33 +715,57 @@ def merge_stadiu_lines(doc_url: str, lines: Iterable[Mapping[str, Any]]) -> None
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT dossier_ref, registered_date, termen_date, solutie_order
+                    SELECT dossier_ref, registered_date, termen_date, solutie_order,
+                           dossier_num, dossier_year
                     FROM stadiu_list_lines WHERE doc_url = %s
                     """,
                     (doc_url,),
                 )
                 existing_rows = cur.fetchall()
-                first_vals: dict[str, tuple[str | None, str | None, str | None]] = {}
+                first_vals: dict[
+                    str,
+                    tuple[str | None, str | None, str | None, int | None, int | None],
+                ] = {}
                 for r in existing_rows:
                     dr = _normalize_stadiu_cell(r[0])
                     if not dr or dr in first_vals:
                         continue
+                    n_e, y_e = r[4], r[5]
+                    if n_e is None or y_e is None:
+                        n_e, y_e = parse_dossier_ref_parts(dr)
+                    else:
+                        try:
+                            n_e = int(n_e)
+                            y_e = int(y_e)
+                        except (TypeError, ValueError):
+                            n_e, y_e = parse_dossier_ref_parts(dr)
                     first_vals[dr] = (
                         _normalize_stadiu_cell(r[1]),
                         _normalize_stadiu_cell(r[2]),
                         _normalize_stadiu_cell(r[3]),
+                        n_e,
+                        y_e,
                     )
                 for dr, row in by_ref.items():
-                    new_t = _stadiu_line_tuple(row)
+                    new_t = _stadiu_line_snapshot(row, dr)
                     if dr not in first_vals:
                         cur.execute(
                             """
                             INSERT INTO stadiu_list_lines (
-                                doc_url, dossier_ref, registered_date, termen_date, solutie_order
+                                doc_url, dossier_ref, dossier_num, dossier_year,
+                                registered_date, termen_date, solutie_order
                             )
-                            VALUES (%s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
                             """,
-                            (doc_url, dr, new_t[0], new_t[1], new_t[2]),
+                            (
+                                doc_url,
+                                dr,
+                                new_t[3],
+                                new_t[4],
+                                new_t[0],
+                                new_t[1],
+                                new_t[2],
+                            ),
                         )
                     elif first_vals[dr] != new_t:
                         cur.execute(
@@ -597,49 +773,92 @@ def merge_stadiu_lines(doc_url: str, lines: Iterable[Mapping[str, Any]]) -> None
                             UPDATE stadiu_list_lines SET
                                 registered_date = %s,
                                 termen_date = %s,
-                                solutie_order = %s
+                                solutie_order = %s,
+                                dossier_num = %s,
+                                dossier_year = %s
                             WHERE doc_url = %s AND dossier_ref = %s
                             """,
-                            (new_t[0], new_t[1], new_t[2], doc_url, dr),
+                            (
+                                new_t[0],
+                                new_t[1],
+                                new_t[2],
+                                new_t[3],
+                                new_t[4],
+                                doc_url,
+                                dr,
+                            ),
                         )
         else:
-            existing_rows = conn.execute(
+            cur = conn.cursor()
+            cur.execute(
                 """
-                SELECT dossier_ref, registered_date, termen_date, solutie_order
+                SELECT dossier_ref, registered_date, termen_date, solutie_order,
+                       dossier_num, dossier_year
                 FROM stadiu_list_lines WHERE doc_url = ?
                 """,
                 (doc_url,),
-            ).fetchall()
+            )
+            existing_rows = cur.fetchall()
             first_vals = {}
             for r in existing_rows:
                 dr = _normalize_stadiu_cell(r[0])
                 if not dr or dr in first_vals:
                     continue
+                n_e, y_e = r[4], r[5]
+                if n_e is None or y_e is None:
+                    n_e, y_e = parse_dossier_ref_parts(dr)
+                else:
+                    try:
+                        n_e = int(n_e)
+                        y_e = int(y_e)
+                    except (TypeError, ValueError):
+                        n_e, y_e = parse_dossier_ref_parts(dr)
                 first_vals[dr] = (
                     _normalize_stadiu_cell(r[1]),
                     _normalize_stadiu_cell(r[2]),
                     _normalize_stadiu_cell(r[3]),
+                    n_e,
+                    y_e,
                 )
             for dr, row in by_ref.items():
-                new_t = _stadiu_line_tuple(row)
+                new_t = _stadiu_line_snapshot(row, dr)
                 if dr not in first_vals:
-                    conn.execute(
+                    cur.execute(
                         """
                         INSERT INTO stadiu_list_lines (
-                            doc_url, dossier_ref, registered_date, termen_date, solutie_order
+                            doc_url, dossier_ref, dossier_num, dossier_year,
+                            registered_date, termen_date, solutie_order
                         )
-                        VALUES (?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (doc_url, dr, new_t[0], new_t[1], new_t[2]),
+                        (
+                            doc_url,
+                            dr,
+                            new_t[3],
+                            new_t[4],
+                            new_t[0],
+                            new_t[1],
+                            new_t[2],
+                        ),
                     )
                 elif first_vals[dr] != new_t:
-                    conn.execute(
+                    cur.execute(
                         """
                         UPDATE stadiu_list_lines SET
                             registered_date = ?,
                             termen_date = ?,
-                            solutie_order = ?
+                            solutie_order = ?,
+                            dossier_num = ?,
+                            dossier_year = ?
                         WHERE doc_url = ? AND dossier_ref = ?
                         """,
-                        (new_t[0], new_t[1], new_t[2], doc_url, dr),
+                        (
+                            new_t[0],
+                            new_t[1],
+                            new_t[2],
+                            new_t[3],
+                            new_t[4],
+                            doc_url,
+                            dr,
+                        ),
                     )
