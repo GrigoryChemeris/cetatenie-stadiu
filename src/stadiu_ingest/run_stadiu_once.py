@@ -25,14 +25,19 @@ from stadiu_ingest.config import (
     MAX_NEW_STADIU_DOWNLOADS,
     MAX_STADIU_REFRESH_PER_RUN,
     PAGE_LOAD_TIMEOUT,
+    STADIU_BETWEEN_PDF_SEC,
+    STADIU_HTTP_DOWNLOAD_ATTEMPTS,
+    STADIU_HTTP_RETRY_BASE_SEC,
+    STADIU_LIST_HTTP_ATTEMPTS,
     STADIU_PAGE_URL,
     STADIU_PARSE_PDF_SUBPROCESS,
     STADIU_PREFER_HTTP_LIST,
     STADIU_PREFER_HTTP_PDF,
     STADIU_REFRESH_AFTER_DAYS,
+    STADIU_SELENIUM_DOWNLOAD_ATTEMPTS,
 )
 from stadiu_ingest.http_pdf import (
-    download_pdf_via_http,
+    download_pdf_via_http_retry,
     fetch_stadiu_list_html_via_http,
     sha256_file,
 )
@@ -74,6 +79,8 @@ def main() -> int:
                 STADIU_PAGE_URL,
                 list_ua,
                 float(PAGE_LOAD_TIMEOUT),
+                attempts=STADIU_LIST_HTTP_ATTEMPTS,
+                base_delay_sec=STADIU_HTTP_RETRY_BASE_SEC,
             )
         if html is None:
             log.info("stadiu-dosar через Selenium | UA: %s...", list_ua[:70])
@@ -169,31 +176,61 @@ def main() -> int:
             saved: Path | None = None
             if STADIU_PREFER_HTTP_PDF:
                 try:
-                    saved = download_pdf_via_http(
+                    saved = download_pdf_via_http_retry(
                         url,
                         download_root,
                         user_agent=pdf_ua,
                         timeout=float(PAGE_LOAD_TIMEOUT),
+                        referer=STADIU_PAGE_URL,
+                        attempts=STADIU_HTTP_DOWNLOAD_ATTEMPTS,
+                        base_delay_sec=STADIU_HTTP_RETRY_BASE_SEC,
                     )
                     log.info("PDF %s — по HTTP, UA: %s...", label, pdf_ua[:50])
                 except Exception as e:  # noqa: BLE001
-                    log.info("PDF %s — HTTP не удалось (%s), пробуем Selenium", label, e)
+                    log.info("PDF %s — HTTP не удалось после повторов (%s), пробуем Selenium", label, e)
 
             if saved is None:
-                if driver is None:
-                    log.info("Запуск Chromium для скачивания PDF…")
-                    driver = build_chrome(download_root, random_user_agent())
-                set_random_user_agent(driver, pdf_ua)
-                log.info("PDF %s — Selenium, UA: %s...", label, pdf_ua[:50])
-                try:
-                    saved = download_pdf_to_dir(
-                        driver,
-                        download_root,
-                        url,
-                        timeout=float(PAGE_LOAD_TIMEOUT),
+                for sel_try in range(max(1, STADIU_SELENIUM_DOWNLOAD_ATTEMPTS)):
+                    if driver is None:
+                        log.info("Запуск Chromium для скачивания PDF…")
+                        driver = build_chrome(download_root, random_user_agent())
+                    set_random_user_agent(driver, pdf_ua)
+                    log.info(
+                        "PDF %s — Selenium (%s/%s), UA: %s...",
+                        label,
+                        sel_try + 1,
+                        STADIU_SELENIUM_DOWNLOAD_ATTEMPTS,
+                        pdf_ua[:50],
                     )
-                except Exception as e:  # noqa: BLE001
-                    log.error("Скачивание не удалось: %s", e)
+                    try:
+                        saved = download_pdf_to_dir(
+                            driver,
+                            download_root,
+                            url,
+                            timeout=float(PAGE_LOAD_TIMEOUT),
+                        )
+                        break
+                    except Exception as e:  # noqa: BLE001
+                        log.warning(
+                            "PDF %s — Selenium попытка %s: %s",
+                            label,
+                            sel_try + 1,
+                            e,
+                        )
+                        try:
+                            driver.quit()
+                        except Exception:
+                            pass
+                        driver = None
+                        if sel_try + 1 < STADIU_SELENIUM_DOWNLOAD_ATTEMPTS:
+                            time.sleep(
+                                min(
+                                    STADIU_HTTP_RETRY_BASE_SEC * (2**sel_try),
+                                    45.0,
+                                )
+                            )
+                if saved is None:
+                    log.error("Скачивание не удалось (HTTP+Selenium): %s", label)
                     continue
 
             digest = sha256_file(saved)
@@ -210,7 +247,7 @@ def main() -> int:
                         saved.unlink(missing_ok=True)
                     except OSError:
                         pass
-                    time.sleep(1.5)
+                    time.sleep(STADIU_BETWEEN_PDF_SEC)
                     continue
 
             canonical = db.find_stadiu_canonical_url_by_sha256(digest)
@@ -224,7 +261,7 @@ def main() -> int:
                     saved.unlink(missing_ok=True)
                 except OSError:
                     pass
-                time.sleep(1.5)
+                time.sleep(STADIU_BETWEEN_PDF_SEC)
                 continue
 
             url_meta = meta_from_art11_pdf_url(url)
@@ -275,7 +312,7 @@ def main() -> int:
 
             known.add(url)
             gc.collect()
-            time.sleep(1.5)
+            time.sleep(STADIU_BETWEEN_PDF_SEC)
 
         log.info("Готово.")
         return 0

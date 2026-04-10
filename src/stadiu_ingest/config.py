@@ -12,9 +12,9 @@ SQLITE_PATH = Path(os.getenv("SQLITE_PATH", "./data/stadiu.db")).resolve()
 STADIU_PAGE_URL = os.getenv(
     "STADIU_PAGE_URL", "https://cetatenie.just.ro/stadiu-dosar/"
 )
-MAX_NEW_STADIU_DOWNLOADS = int(os.getenv("MAX_NEW_STADIU_DOWNLOADS", "2"))
-# Первый прогон при пустой БД (нет ни одной записи в stadiu_list_documents): 0 = все PDF Art.11 за раз
-COLD_START_MAX_STADIU_PDFS = int(os.getenv("COLD_START_MAX_STADIU_PDFS", "0"))
+MAX_NEW_STADIU_DOWNLOADS = int(os.getenv("MAX_NEW_STADIU_DOWNLOADS", "1"))
+# Первый прогон при пустой БД: 0 = все PDF Art.11 за раз (риск OOM на малом RAM). По умолчанию порциями.
+COLD_START_MAX_STADIU_PDFS = int(os.getenv("COLD_START_MAX_STADIU_PDFS", "6"))
 
 # Тот же URL на сайте, но файл на сервере мог обновиться — перекачка и сравнение sha256.
 # 0 = не планировать принудительную проверку по времени (только новые URL).
@@ -61,3 +61,10 @@ POLL_INTERVAL_MAX_MINUTES = int(os.getenv("POLL_INTERVAL_MAX_MINUTES", "45"))
 # Каждый прогон заново читает страницу stadiu-dosar и парсит href PDF; при смене имени файла на сайте
 # обычно меняется URL — он попадёт в «новые». Пример: 240 ≈ 6 раз в сутки.
 STADIU_LIST_POLL_MINUTES = int(os.getenv("STADIU_LIST_POLL_MINUTES", "0"))
+
+# Устойчивость сети (Railway / блокировки / rate limit)
+STADIU_HTTP_DOWNLOAD_ATTEMPTS = int(os.getenv("STADIU_HTTP_DOWNLOAD_ATTEMPTS", "5"))
+STADIU_LIST_HTTP_ATTEMPTS = int(os.getenv("STADIU_LIST_HTTP_ATTEMPTS", "4"))
+STADIU_HTTP_RETRY_BASE_SEC = float(os.getenv("STADIU_HTTP_RETRY_BASE_SEC", "3"))
+STADIU_SELENIUM_DOWNLOAD_ATTEMPTS = int(os.getenv("STADIU_SELENIUM_DOWNLOAD_ATTEMPTS", "3"))
+STADIU_BETWEEN_PDF_SEC = float(os.getenv("STADIU_BETWEEN_PDF_SEC", "5"))
