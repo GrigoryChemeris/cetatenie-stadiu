@@ -18,6 +18,7 @@ from stadiu_ingest.config import (
     HEADLESS,
     LIST_PAGE_WAIT_TIMEOUT,
     PAGE_LOAD_TIMEOUT,
+    STADIU_CHROME_LOW_MEMORY,
 )
 
 log = logging.getLogger("stadiu_ingest.selenium")
@@ -38,8 +39,14 @@ def _chrome_options(download_dir: Path, user_agent: str, *, stealth: bool) -> we
     opts.add_argument("--no-first-run")
     opts.add_argument("--disable-background-networking")
     opts.add_argument("--mute-audio")
-    opts.add_argument("--window-size=1400,900")
+    opts.add_argument("--window-size=1280,720")
     opts.add_argument(f"--user-agent={user_agent}")
+    if STADIU_CHROME_LOW_MEMORY:
+        opts.add_argument(
+            "--disable-features=IsolateOrigins,site-per-process,VizDisplayCompositor"
+        )
+        opts.add_argument("--renderer-process-limit=1")
+        opts.add_argument("--no-zygote")
     if stealth:
         opts.add_argument("--disable-blink-features=AutomationControlled")
         opts.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -47,15 +54,15 @@ def _chrome_options(download_dir: Path, user_agent: str, *, stealth: bool) -> we
         opts.page_load_strategy = "eager"
     except Exception:
         pass
-    opts.add_experimental_option(
-        "prefs",
-        {
-            "download.default_directory": str(download_dir.resolve()),
-            "download.prompt_for_download": False,
-            "plugins.always_open_pdf_externally": True,
-            "safebrowsing.enabled": True,
-        },
-    )
+    prefs: dict = {
+        "download.default_directory": str(download_dir.resolve()),
+        "download.prompt_for_download": False,
+        "plugins.always_open_pdf_externally": True,
+        "safebrowsing.enabled": True,
+    }
+    if STADIU_CHROME_LOW_MEMORY:
+        prefs["profile.managed_default_content_settings.images"] = 2
+    opts.add_experimental_option("prefs", prefs)
     return opts
 
 

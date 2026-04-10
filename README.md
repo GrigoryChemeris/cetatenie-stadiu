@@ -44,7 +44,7 @@ PYTHONPATH=src python list_art11_pdfs_from_html.py ~/Downloads/stadiu-dosar.html
 ## Таблицы
 
 - `stadiu_list_documents` — ключ `url`: для с сайта это **https URL файла**, для локального импорта — `local:<sha256>`.
-- `stadiu_list_lines` — строки списка (`dossier_ref`, `registered_date`, `termen_date`, `solutie_order`).
+- `stadiu_list_lines` — строки списка (`dossier_ref`, `registered_date`, `termen_date`, `solutie_order`). Повторный парсинг того же `doc_url`: по паре (`doc_url`, `dossier_ref`) — `INSERT` новых, `UPDATE` только если изменились даты/решение; строки, которых больше нет в PDF, **не удаляются**.
 - `stadiu_url_aliases` — тот же PDF по байтам уже сохранён под другим `url`; ссылка со страницы ведёт на каноническую запись (как `pdf_url_aliases` в первом сервисе).
 
 Итог по отказам / `solutie_order` — см. прежний текст в `parser_art11.py` и комментарии в README ранее (сопоставление с приказами — отдельными запросами).

@@ -8,7 +8,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV CHROME_BIN=/usr/bin/chromium \
     CHROMEDRIVER_PATH=/usr/bin/chromedriver \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    MALLOC_ARENA_MAX=2 \
+    STADIU_PREFER_HTTP_PDF=1 \
+    STADIU_PREFER_HTTP_LIST=1 \
+    STADIU_PARSE_PDF_SUBPROCESS=1 \
+    STADIU_CHROME_LOW_MEMORY=1 \
+    MAX_NEW_STADIU_DOWNLOADS=1 \
+    MAX_STADIU_REFRESH_PER_RUN=1 \
+    COLD_START_MAX_STADIU_PDFS=6
 
 WORKDIR /app
 

@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 import sys
 from pathlib import Path
@@ -21,7 +20,12 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from stadiu_ingest import db  # noqa: E402
-from stadiu_ingest.parser_art11 import parse_art11_submission_pdf  # noqa: E402
+from stadiu_ingest.config import STADIU_PARSE_PDF_SUBPROCESS  # noqa: E402
+from stadiu_ingest.http_pdf import sha256_file  # noqa: E402
+from stadiu_ingest.parser_art11 import (  # noqa: E402
+    parse_art11_submission_pdf,
+    parse_art11_submission_pdf_isolated,
+)
 
 
 def iter_pdf_paths(paths: list[Path], recursive: bool) -> list[Path]:
@@ -63,8 +67,7 @@ def main() -> int:
 
     ok_n = err_n = skip_n = 0
     for i, path in enumerate(pdfs, start=1):
-        data = path.read_bytes()
-        digest = hashlib.sha256(data).hexdigest()
+        digest = sha256_file(path)
         synthetic = f"local:{digest}"
 
         if not args.force and synthetic in known:
@@ -74,7 +77,10 @@ def main() -> int:
 
         print(f"[{i}/{len(pdfs)}] {path.name} …", flush=True)
         try:
-            meta, lines = parse_art11_submission_pdf(path)
+            if STADIU_PARSE_PDF_SUBPROCESS:
+                meta, lines = parse_art11_submission_pdf_isolated(path)
+            else:
+                meta, lines = parse_art11_submission_pdf(path)
         except Exception as e:  # noqa: BLE001
             err_n += 1
             db.insert_stadiu_document_meta(
@@ -100,7 +106,7 @@ def main() -> int:
             row_count=meta.get("row_count"),
             parse_error=None,
         )
-        db.replace_stadiu_lines(synthetic, lines)
+        db.merge_stadiu_lines(synthetic, lines)
         known.add(synthetic)
         ok_n += 1
         print(f"    OK строк={len(lines)}")
