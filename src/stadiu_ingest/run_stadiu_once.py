@@ -1,6 +1,9 @@
 """
-Один прогон: список stadiu-dosar (по возможности HTTP, иначе Selenium) → Art. 11 PDF → БД.
-Скачивание PDF по HTTP и парсинг в отдельном процессе — см. config / Dockerfile (RAM).
+Один прогон: список stadiu-dosar и PDF Art. 11 по умолчанию через Selenium с ротацией User-Agent
+(см. user_agents.py) — меньше риск блокировки, чем у «голого» HTTP с датацентра.
+Опционально STADIU_PREFER_HTTP_LIST / STADIU_PREFER_HTTP_PDF=1 — только если осознанно нужно.
+
+Порции за прогон ограничены (MAX_NEW_STADIU_DOWNLOADS, COLD_START_MAX_STADIU_PDFS, refresh).
 
 На каждом прогоне заново загружается страница и парсятся href на PDF. Если министерство
 выложило файл с другим именем (часто с суффиксом вроде update в имени), обычно меняется

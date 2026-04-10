@@ -13,13 +13,13 @@ STADIU_PAGE_URL = os.getenv(
     "STADIU_PAGE_URL", "https://cetatenie.just.ro/stadiu-dosar/"
 )
 MAX_NEW_STADIU_DOWNLOADS = int(os.getenv("MAX_NEW_STADIU_DOWNLOADS", "1"))
-# Первый прогон при пустой БД: 0 = все PDF Art.11 за раз (риск OOM на малом RAM). По умолчанию порциями.
-COLD_START_MAX_STADIU_PDFS = int(os.getenv("COLD_START_MAX_STADIU_PDFS", "6"))
+# Первый прогон при пустой БД: 0 = все PDF за один прогон (не рекомендуется). По умолчанию — маленькие порции.
+COLD_START_MAX_STADIU_PDFS = int(os.getenv("COLD_START_MAX_STADIU_PDFS", "3"))
 
 # Тот же URL на сайте, но файл на сервере мог обновиться — перекачка и сравнение sha256.
 # 0 = не планировать принудительную проверку по времени (только новые URL).
 STADIU_REFRESH_AFTER_DAYS = int(os.getenv("STADIU_REFRESH_AFTER_DAYS", "7"))
-MAX_STADIU_REFRESH_PER_RUN = int(os.getenv("MAX_STADIU_REFRESH_PER_RUN", "2"))
+MAX_STADIU_REFRESH_PER_RUN = int(os.getenv("MAX_STADIU_REFRESH_PER_RUN", "1"))
 
 PAGE_LOAD_TIMEOUT = int(os.getenv("PAGE_LOAD_TIMEOUT", "120"))
 LIST_PAGE_WAIT_TIMEOUT = int(os.getenv("LIST_PAGE_WAIT_TIMEOUT", "90"))
@@ -28,9 +28,9 @@ HEADLESS = os.getenv("HEADLESS", "1").strip().lower() in ("1", "true", "yes")
 CHROME_BIN = os.getenv("CHROME_BIN", "").strip()
 CHROMEDRIVER_PATH = os.getenv("CHROMEDRIVER_PATH", "").strip()
 
-# Сначала скачивать PDF через urllib (без открытия URL в Chromium) — сильно снижает RAM на Railway.
-# 0 = только Selenium, как раньше.
-STADIU_PREFER_HTTP_PDF = os.getenv("STADIU_PREFER_HTTP_PDF", "1").strip().lower() in (
+# По умолчанию выключено: сайт лучше не дёргать «голым» urllib — Selenium + смена User-Agent.
+# 1 = пробовать HTTP (меньше RAM; риск 503/блока с датацентра).
+STADIU_PREFER_HTTP_PDF = os.getenv("STADIU_PREFER_HTTP_PDF", "0").strip().lower() in (
     "1",
     "true",
     "yes",
@@ -43,8 +43,9 @@ STADIU_CHROME_LOW_MEMORY = os.getenv("STADIU_CHROME_LOW_MEMORY", "1").strip().lo
     "yes",
 )
 
-# Сначала GET страницы stadiu-dosar; если в HTML уже есть Art.11 — Chromium для списка не поднимаем.
-STADIU_PREFER_HTTP_LIST = os.getenv("STADIU_PREFER_HTTP_LIST", "1").strip().lower() in (
+# По умолчанию выключено: список только через Selenium + UA (как PDF).
+# 1 = сначала обычный GET (экономия RAM; возможны отличия от «браузерной» выдачи).
+STADIU_PREFER_HTTP_LIST = os.getenv("STADIU_PREFER_HTTP_LIST", "0").strip().lower() in (
     "1",
     "true",
     "yes",
@@ -67,4 +68,4 @@ STADIU_HTTP_DOWNLOAD_ATTEMPTS = int(os.getenv("STADIU_HTTP_DOWNLOAD_ATTEMPTS", "
 STADIU_LIST_HTTP_ATTEMPTS = int(os.getenv("STADIU_LIST_HTTP_ATTEMPTS", "4"))
 STADIU_HTTP_RETRY_BASE_SEC = float(os.getenv("STADIU_HTTP_RETRY_BASE_SEC", "3"))
 STADIU_SELENIUM_DOWNLOAD_ATTEMPTS = int(os.getenv("STADIU_SELENIUM_DOWNLOAD_ATTEMPTS", "3"))
-STADIU_BETWEEN_PDF_SEC = float(os.getenv("STADIU_BETWEEN_PDF_SEC", "5"))
+STADIU_BETWEEN_PDF_SEC = float(os.getenv("STADIU_BETWEEN_PDF_SEC", "8"))
