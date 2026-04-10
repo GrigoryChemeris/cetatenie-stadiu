@@ -23,6 +23,8 @@ MAX_STADIU_REFRESH_PER_RUN = int(os.getenv("MAX_STADIU_REFRESH_PER_RUN", "1"))
 
 PAGE_LOAD_TIMEOUT = int(os.getenv("PAGE_LOAD_TIMEOUT", "120"))
 LIST_PAGE_WAIT_TIMEOUT = int(os.getenv("LIST_PAGE_WAIT_TIMEOUT", "90"))
+# После появления контента на stadiu-dosar: пауза на догрузку вкладок / лоадер (сек).
+STADIU_LIST_SETTLE_SEC = float(os.getenv("STADIU_LIST_SETTLE_SEC", "12"))
 HEADLESS = os.getenv("HEADLESS", "1").strip().lower() in ("1", "true", "yes")
 
 CHROME_BIN = os.getenv("CHROME_BIN", "").strip()

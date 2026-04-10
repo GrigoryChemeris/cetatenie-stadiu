@@ -32,6 +32,7 @@ from stadiu_ingest.config import (
     STADIU_HTTP_DOWNLOAD_ATTEMPTS,
     STADIU_HTTP_RETRY_BASE_SEC,
     STADIU_LIST_HTTP_ATTEMPTS,
+    STADIU_LIST_SETTLE_SEC,
     STADIU_PAGE_URL,
     STADIU_PARSE_PDF_SUBPROCESS,
     STADIU_PREFER_HTTP_LIST,
@@ -91,7 +92,7 @@ def main() -> int:
             html = fetch_html(
                 driver,
                 STADIU_PAGE_URL,
-                settle_seconds=3.0,
+                settle_seconds=STADIU_LIST_SETTLE_SEC,
                 wait_for_content=True,
                 stadiu_dosar_page=True,
             )

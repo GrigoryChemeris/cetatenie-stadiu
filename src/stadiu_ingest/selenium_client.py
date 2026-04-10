@@ -21,6 +21,13 @@ from stadiu_ingest.config import (
     STADIU_CHROME_LOW_MEMORY,
 )
 
+
+def _stadiu_list_content_ready(driver: webdriver.Chrome, html_lower: str) -> bool:
+    """Есть ссылки .pdf в DOM или в разметке уже виден блок Art. 11 с .pdf (лоадер ушёл)."""
+    if _pdf_link_count_page(driver) > 0:
+        return True
+    return "articolul-11-tab" in html_lower and ".pdf" in html_lower
+
 log = logging.getLogger("stadiu_ingest.selenium")
 
 
@@ -150,13 +157,25 @@ def fetch_html(
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             src = _page_source_safe(driver)
+            low = src.lower()
             if _is_bot_challenge_page(src):
                 time.sleep(0.6)
                 continue
-            if _pdf_link_count_page(driver) > 0:
+            ready = (
+                _stadiu_list_content_ready(driver, low)
+                if stadiu_dosar_page
+                else _pdf_link_count_page(driver) > 0
+            )
+            if ready:
                 break
             time.sleep(0.4)
-        if _pdf_link_count_page(driver) == 0:
+        src_now = _page_source_safe(driver)
+        low_now = src_now.lower()
+        if not (
+            _stadiu_list_content_ready(driver, low_now)
+            if stadiu_dosar_page
+            else _pdf_link_count_page(driver) > 0
+        ):
             try:
                 driver.refresh()
             except TimeoutException:
@@ -165,10 +184,16 @@ def fetch_html(
             deadline2 = time.monotonic() + min(45.0, timeout)
             while time.monotonic() < deadline2:
                 src = _page_source_safe(driver)
+                low = src.lower()
                 if _is_bot_challenge_page(src):
                     time.sleep(0.6)
                     continue
-                if _pdf_link_count_page(driver) > 0:
+                ready = (
+                    _stadiu_list_content_ready(driver, low)
+                    if stadiu_dosar_page
+                    else _pdf_link_count_page(driver) > 0
+                )
+                if ready:
                     break
                 time.sleep(0.4)
 
@@ -176,15 +201,27 @@ def fetch_html(
         time.sleep(settle_seconds)
 
     html = driver.page_source or ""
-    if wait_for_content and _pdf_link_count_page(driver) == 0:
-        if _is_bot_challenge_page(html):
-            log.warning(
-                "stadiu-dosar: похоже anti-bot. Увеличьте LIST_PAGE_WAIT_TIMEOUT или HEADLESS=0."
-            )
-        elif stadiu_dosar_page and "articolul-11-tab" not in html.lower():
-            log.warning(
-                "stadiu-dosar: нет id articolul-11-tab и нет ссылок .pdf — проверьте HTML."
-            )
+    hlow = html.lower()
+    if wait_for_content:
+        ready = (
+            _stadiu_list_content_ready(driver, hlow)
+            if stadiu_dosar_page
+            else _pdf_link_count_page(driver) > 0
+        )
+        if not ready:
+            if _is_bot_challenge_page(html):
+                log.warning(
+                    "stadiu-dosar: похоже anti-bot. Увеличьте LIST_PAGE_WAIT_TIMEOUT или HEADLESS=0."
+                )
+            elif stadiu_dosar_page and "articolul-11-tab" not in hlow:
+                log.warning(
+                    "stadiu-dosar: нет id articolul-11-tab и нет ссылок .pdf — проверьте HTML."
+                )
+            elif stadiu_dosar_page:
+                log.warning(
+                    "stadiu-dosar: блок Art. 11 есть, но ссылок .pdf в HTML не видно — "
+                    "увеличьте LIST_PAGE_WAIT_TIMEOUT или STADIU_LIST_SETTLE_SEC."
+                )
     return html
 
 

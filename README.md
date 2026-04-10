@@ -4,6 +4,8 @@
 
 **User-Agent:** свой пул в `src/stadiu_ingest/user_agents.py` (не те же строки, что в первом сервисе). По умолчанию **и список, и PDF** идут через **Selenium** с сменой UA на каждый PDF; «голый» HTTP отключён (`STADIU_PREFER_HTTP_*`), чтобы реже ловить 503/блок с датацентра.
 
+Ожидание **stadiu-dosar:** опрос DOM до появления ссылок `.pdf` или (для Art. 11) пока в HTML не появятся `articolul-11-tab` и подстрока `.pdf` — не дольше `LIST_PAGE_WAIT_TIMEOUT` (по умолчанию 90 с), затем при неудаче refresh и ещё до `min(45, timeout)` с; после этого пауза **`STADIU_LIST_SETTLE_SEC`** (по умолчанию 12 с) на догрузку/лоадер. При медленном сайте на Railway задайте `LIST_PAGE_WAIT_TIMEOUT=180` и при необходимости `STADIU_LIST_SETTLE_SEC=20`.
+
 **Логика как у первого сервиса:** Chromium, ожидание anti-bot / появления ссылок `.pdf`, скачивание в temp, SHA-256, дедуп по URL и по содержимому (`stadiu_url_aliases`). За один прогон — ограниченное число новых PDF (см. `.env.example`).
 
 ## Страница stadiu-dosar и артикул 11
