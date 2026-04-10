@@ -7,9 +7,13 @@ import random
 import time
 
 from stadiu_ingest.config import (
+    COLD_START_MAX_STADIU_PDFS,
+    MAX_NEW_STADIU_DOWNLOADS,
+    MAX_STADIU_REFRESH_PER_RUN,
     POLL_INTERVAL_MAX_MINUTES,
     POLL_INTERVAL_MIN_MINUTES,
     STADIU_LIST_POLL_MINUTES,
+    STADIU_REFRESH_AFTER_DAYS,
 )
 from stadiu_ingest.run_stadiu_once import main as run_stadiu_once_main
 
@@ -31,6 +35,14 @@ def main() -> None:
         )
     else:
         log.info("stadiu scheduler: пауза %s–%s мин между прогонами", lo_m, hi_m)
+    log.info(
+        "лимиты прогона: MAX_NEW_STADIU_DOWNLOADS=%s COLD_START_MAX_STADIU_PDFS=%s "
+        "STADIU_REFRESH_AFTER_DAYS=%s MAX_STADIU_REFRESH_PER_RUN=%s",
+        MAX_NEW_STADIU_DOWNLOADS,
+        COLD_START_MAX_STADIU_PDFS,
+        STADIU_REFRESH_AFTER_DAYS,
+        MAX_STADIU_REFRESH_PER_RUN,
+    )
 
     while True:
         code = run_stadiu_once_main()
