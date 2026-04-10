@@ -2,6 +2,20 @@
 
 Отдельный сервис для PDF **списков подачи** (stadiu dosar, **Art. 11**): парсинг и хранение строк в Postgres/SQLite. Не зависит от `cetatenie-mvp` (приказы).
 
+## Страница stadiu-dosar и артикул 11
+
+**Автоскачивание страницы в облаке пока не делалось** — сервис поднимает только placeholder-процесс. Импорт идёт с **локальных PDF** или вручную скачанных файлов.
+
+На https://cetatenie.just.ro/stadiu-dosar/ несколько вкладок (Art. 8, 8.1, 10, 11, …). В сохранённом HTML (и в `page_source` после Selenium) контент всех вкладок уже лежит в DOM. **Только Art. 11** выбирается по панели с id **`articolul-11-tab`** (виджет Essential Addons / Elementor). Остальные артикулы — другие `id` (`articolul-8-tab`, …), мы их не парсим.
+
+Из сохранённой страницы («Сохранить как…»):
+
+```bash
+PYTHONPATH=src python list_art11_pdfs_from_html.py ~/Downloads/stadiu-dosar.html
+```
+
+Список URL только для вкладки ARTICOLUL 11 (без PDF других статей).
+
 ## Локально
 
 ```bash
