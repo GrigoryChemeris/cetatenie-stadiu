@@ -694,6 +694,57 @@ def _stadiu_line_snapshot(
     return (reg, term, sol, n, y)
 
 
+def count_stadiu_lines_for_document(doc_url: str) -> int:
+    """Число строк в stadiu_list_lines для данного doc_url."""
+    with get_conn() as conn:
+        if _USE_PG:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*)::int FROM stadiu_list_lines WHERE doc_url = %s",
+                    (doc_url,),
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row and row[0] is not None else 0
+        row = conn.execute(
+            "SELECT COUNT(*) FROM stadiu_list_lines WHERE doc_url = ?",
+            (doc_url,),
+        ).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+
+def mark_stadiu_document_merge_mismatch(
+    url: str,
+    *,
+    parse_error: str,
+    row_count: int,
+) -> None:
+    """Пометить документ после merge с 0 строк при ненулевом парсе (рассинхрон метаданных)."""
+    with get_conn() as conn:
+        if _USE_PG:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE stadiu_list_documents SET
+                        parsed_ok = FALSE,
+                        row_count = %s,
+                        parse_error = %s
+                    WHERE url = %s
+                    """,
+                    (row_count, parse_error[:2000], url),
+                )
+        else:
+            conn.execute(
+                """
+                UPDATE stadiu_list_documents SET
+                    parsed_ok = 0,
+                    row_count = ?,
+                    parse_error = ?
+                WHERE url = ?
+                """,
+                (row_count, parse_error[:2000], url),
+            )
+
+
 def merge_stadiu_lines(doc_url: str, lines: Iterable[Mapping[str, Any]]) -> None:
     """
     Слияние снимка PDF с БД по ключу (doc_url, dossier_ref).
