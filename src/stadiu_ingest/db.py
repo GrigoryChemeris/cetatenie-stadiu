@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sqlite3
+import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +17,18 @@ _log = logging.getLogger(__name__)
 
 # N/RD/год (после нормализации в парсере)
 _DOSSIER_REF_PARTS = re.compile(r"^(\d+)/RD/(\d{4})\s*$", re.IGNORECASE)
+
+
+def _merge_stadiu_lines_progress(
+    n: int, total: int, doc_url: str, *, every: int
+) -> None:
+    """Печать в stderr: merge идёт (незакоммиченные строки из другой сессии не видны)."""
+    if every <= 0 or total <= 0:
+        return
+    if n != total and n % every != 0:
+        return
+    short = doc_url if len(doc_url) <= 72 else doc_url[:69] + "…"
+    print(f"merge_stadiu_lines {n}/{total}  {short}", file=sys.stderr, flush=True)
 
 
 def parse_dossier_ref_parts(dossier_ref: str | None) -> tuple[int | None, int | None]:
@@ -799,47 +813,97 @@ def merge_stadiu_lines(doc_url: str, lines: Iterable[Mapping[str, Any]]) -> None
                         n_e,
                         y_e,
                     )
-                for dr, row in by_ref.items():
-                    new_t = _stadiu_line_snapshot(row, dr)
-                    if dr not in first_vals:
-                        cur.execute(
-                            """
-                            INSERT INTO stadiu_list_lines (
-                                doc_url, dossier_ref, dossier_num, dossier_year,
-                                registered_date, termen_date, solutie_order
+                _prog_raw = os.getenv("STADIU_MERGE_PROGRESS_EVERY", "5000").strip()
+                try:
+                    _prog_every = int(_prog_raw) if _prog_raw else 5000
+                except ValueError:
+                    _prog_every = 5000
+                total_refs = len(by_ref)
+                _chunk_raw = os.getenv("STADIU_MERGE_INSERT_CHUNK", "4096").strip()
+                try:
+                    insert_chunk = int(_chunk_raw) if _chunk_raw else 4096
+                except ValueError:
+                    insert_chunk = 4096
+                insert_chunk = max(500, min(insert_chunk, 50_000))
+                _ins_sql = """
+                    INSERT INTO stadiu_list_lines (
+                        doc_url, dossier_ref, dossier_num, dossier_year,
+                        registered_date, termen_date, solutie_order
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """
+                if not first_vals and by_ref:
+                    batch: list[
+                        tuple[
+                            str,
+                            str,
+                            int | None,
+                            int | None,
+                            str | None,
+                            str | None,
+                            str | None,
+                        ]
+                    ] = []
+                    for dr, row in by_ref.items():
+                        new_t = _stadiu_line_snapshot(row, dr)
+                        batch.append(
+                            (
+                                doc_url,
+                                dr,
+                                new_t[3],
+                                new_t[4],
+                                new_t[0],
+                                new_t[1],
+                                new_t[2],
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
-                            """,
-                            (
-                                doc_url,
-                                dr,
-                                new_t[3],
-                                new_t[4],
-                                new_t[0],
-                                new_t[1],
-                                new_t[2],
-                            ),
                         )
-                    elif first_vals[dr] != new_t:
-                        cur.execute(
-                            """
-                            UPDATE stadiu_list_lines SET
-                                registered_date = %s,
-                                termen_date = %s,
-                                solutie_order = %s,
-                                dossier_num = %s,
-                                dossier_year = %s
-                            WHERE doc_url = %s AND dossier_ref = %s
-                            """,
-                            (
-                                new_t[0],
-                                new_t[1],
-                                new_t[2],
-                                new_t[3],
-                                new_t[4],
-                                doc_url,
-                                dr,
-                            ),
+                    tot = len(batch)
+                    for off in range(0, tot, insert_chunk):
+                        part = batch[off : off + insert_chunk]
+                        cur.executemany(_ins_sql, part)
+                        done = min(off + len(part), tot)
+                        _merge_stadiu_lines_progress(
+                            done, tot, doc_url, every=_prog_every
+                        )
+                else:
+                    for n, (dr, row) in enumerate(by_ref.items(), start=1):
+                        new_t = _stadiu_line_snapshot(row, dr)
+                        if dr not in first_vals:
+                            cur.execute(
+                                _ins_sql,
+                                (
+                                    doc_url,
+                                    dr,
+                                    new_t[3],
+                                    new_t[4],
+                                    new_t[0],
+                                    new_t[1],
+                                    new_t[2],
+                                ),
+                            )
+                        elif first_vals[dr] != new_t:
+                            cur.execute(
+                                """
+                                UPDATE stadiu_list_lines SET
+                                    registered_date = %s,
+                                    termen_date = %s,
+                                    solutie_order = %s,
+                                    dossier_num = %s,
+                                    dossier_year = %s
+                                WHERE doc_url = %s AND dossier_ref = %s
+                                """,
+                                (
+                                    new_t[0],
+                                    new_t[1],
+                                    new_t[2],
+                                    new_t[3],
+                                    new_t[4],
+                                    doc_url,
+                                    dr,
+                                ),
+                            )
+                        _merge_stadiu_lines_progress(
+                            n, total_refs, doc_url, every=_prog_every
                         )
         else:
             cur = conn.cursor()
@@ -873,7 +937,13 @@ def merge_stadiu_lines(doc_url: str, lines: Iterable[Mapping[str, Any]]) -> None
                     n_e,
                     y_e,
                 )
-            for dr, row in by_ref.items():
+            _prog_raw = os.getenv("STADIU_MERGE_PROGRESS_EVERY", "5000").strip()
+            try:
+                _prog_every = int(_prog_raw) if _prog_raw else 5000
+            except ValueError:
+                _prog_every = 5000
+            total_refs = len(by_ref)
+            for n, (dr, row) in enumerate(by_ref.items(), start=1):
                 new_t = _stadiu_line_snapshot(row, dr)
                 if dr not in first_vals:
                     cur.execute(
@@ -915,6 +985,7 @@ def merge_stadiu_lines(doc_url: str, lines: Iterable[Mapping[str, Any]]) -> None
                             dr,
                         ),
                     )
+                _merge_stadiu_lines_progress(n, total_refs, doc_url, every=_prog_every)
 
 
 def finalize_stadiu_lines_for_document(
