@@ -109,6 +109,7 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    print("Инициализация БД (сеть до Postgres может занять до PG_CONNECT_TIMEOUT с)…", flush=True)
     db.init_db()
     targets = _collect_urls(list(args.urls), list(args.filename))
     if not targets:
@@ -203,10 +204,15 @@ def main() -> int:
             lines: list = []
 
             try:
+                print(
+                    f"{label} — разбор PDF (pdfplumber; десятки тысяч строк — несколько минут без вывода)…",
+                    flush=True,
+                )
                 if STADIU_PARSE_PDF_SUBPROCESS:
                     file_meta, lines = parse_art11_submission_pdf_isolated(saved)
                 else:
                     file_meta, lines = parse_art11_submission_pdf(saved)
+                print(f"{label} — парсер вернул {len(lines)} строк", flush=True)
                 parsed_ok = True
                 row_count = file_meta.get("row_count")
                 if file_meta.get("list_year"):
@@ -218,6 +224,7 @@ def main() -> int:
                 exit_code = 1
                 print(f"Ошибка парсинга: {ex}", file=sys.stderr)
 
+            print(f"{label} — запись метаданных и строк в БД…", flush=True)
             db.insert_stadiu_document_meta(
                 storage_url,
                 source_filename=logical_name,
