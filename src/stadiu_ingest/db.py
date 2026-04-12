@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -10,6 +11,7 @@ from typing import Any, Generator, Iterable, Mapping
 from stadiu_ingest.config import DATABASE_URL, PG_CONNECT_TIMEOUT, SQLITE_PATH
 
 _USE_PG = bool(DATABASE_URL)
+_log = logging.getLogger(__name__)
 
 # N/RD/год (после нормализации в парсере)
 _DOSSIER_REF_PARTS = re.compile(r"^(\d+)/RD/(\d{4})\s*$", re.IGNORECASE)
@@ -913,3 +915,93 @@ def merge_stadiu_lines(doc_url: str, lines: Iterable[Mapping[str, Any]]) -> None
                             dr,
                         ),
                     )
+
+
+def finalize_stadiu_lines_for_document(
+    doc_url: str, lines: list[Mapping[str, Any]]
+) -> None:
+    """
+    merge_stadiu_lines + проверка: при 0 строк в БД при ненулевом парсе — mark_stadiu_document_merge_mismatch.
+    Использовать вместо прямого merge из run_stadiu_once / reparse / ingest.
+    """
+    try:
+        merge_stadiu_lines(doc_url, lines)
+    except Exception as e:  # noqa: BLE001
+        _log.exception("merge_stadiu_lines %s", doc_url[:120])
+        mark_stadiu_document_merge_mismatch(
+            doc_url,
+            parse_error=f"merge_stadiu_lines: {e!r}",
+            row_count=0,
+        )
+        return
+
+    n_db = count_stadiu_lines_for_document(doc_url)
+    n_par = len(lines)
+    if n_db == 0 and n_par > 0:
+        msg = (
+            f"после merge в БД 0 строк при {n_par} строках парсера "
+            f"(doc_url={doc_url[:200]})"
+        )
+        _log.error("stadiu: %s", msg)
+        mark_stadiu_document_merge_mismatch(
+            doc_url,
+            parse_error=msg,
+            row_count=0,
+        )
+    elif n_db != n_par:
+        _log.warning(
+            "stadiu: строк в БД=%s, в парсере=%s (документ %s)",
+            n_db,
+            n_par,
+            doc_url[:100],
+        )
+
+
+def list_stadiu_documents_suspicious_zero_lines(
+    *,
+    limit: int = 500,
+    include_all_zero_line_docs: bool = False,
+) -> list[tuple[Any, ...]]:
+    """
+    Документы с 0 строк в stadiu_list_lines.
+
+    По умолчанию — «подозрительные»: parsed_ok или row_count>0, а строк нет.
+    С include_all_zero_line_docs — любой документ без строк.
+    """
+    with get_conn() as conn:
+        if _USE_PG:
+            zero = "(SELECT COUNT(*)::bigint FROM stadiu_list_lines l WHERE l.doc_url = d.url) = 0"
+            if include_all_zero_line_docs:
+                cond = zero
+                params: tuple[Any, ...] = (limit,)
+            else:
+                cond = f"{zero} AND (d.parsed_ok OR COALESCE(d.row_count, 0) > 0)"
+                params = (limit,)
+            sql = f"""
+            SELECT d.url, d.parsed_ok, d.row_count, d.parse_error,
+                   (SELECT COUNT(*)::bigint FROM stadiu_list_lines l WHERE l.doc_url = d.url)
+            FROM stadiu_list_documents d
+            WHERE {cond}
+            ORDER BY d.downloaded_at DESC NULLS LAST
+            LIMIT %s
+            """
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return list(cur.fetchall())
+        zero = "(SELECT COUNT(*) FROM stadiu_list_lines l WHERE l.doc_url = d.url) = 0"
+        if include_all_zero_line_docs:
+            cond = zero
+            params = (limit,)
+        else:
+            cond = f"{zero} AND (d.parsed_ok != 0 OR COALESCE(d.row_count, 0) > 0)"
+            params = (limit,)
+        sql = f"""
+        SELECT d.url, d.parsed_ok, d.row_count, d.parse_error,
+               (SELECT COUNT(*) FROM stadiu_list_lines l WHERE l.doc_url = d.url)
+        FROM stadiu_list_documents d
+        WHERE {cond}
+        ORDER BY d.downloaded_at DESC
+        LIMIT ?
+        """
+        cur = conn.execute(sql, params)
+        return list(cur.fetchall())

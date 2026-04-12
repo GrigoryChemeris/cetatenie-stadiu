@@ -229,7 +229,7 @@ def main() -> int:
                 parse_error=parse_error,
             )
             if parsed_ok:
-                db.merge_stadiu_lines(storage_url, lines)
+                db.finalize_stadiu_lines_for_document(storage_url, lines)
                 su = (
                     storage_url
                     if len(storage_url) <= 72

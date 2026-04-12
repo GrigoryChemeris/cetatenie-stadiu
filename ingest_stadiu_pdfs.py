@@ -106,7 +106,7 @@ def main() -> int:
             row_count=meta.get("row_count"),
             parse_error=None,
         )
-        db.merge_stadiu_lines(synthetic, lines)
+        db.finalize_stadiu_lines_for_document(synthetic, lines)
         known.add(synthetic)
         ok_n += 1
         print(f"    OK строк={len(lines)}")

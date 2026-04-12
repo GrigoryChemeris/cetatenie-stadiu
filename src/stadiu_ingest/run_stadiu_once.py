@@ -307,36 +307,7 @@ def main() -> int:
                 parse_error=parse_error,
             )
             if parsed_ok:
-                try:
-                    db.merge_stadiu_lines(storage_url, lines)
-                except Exception as me:  # noqa: BLE001
-                    log.exception("merge_stadiu_lines: %s", storage_url[:120])
-                    db.mark_stadiu_document_merge_mismatch(
-                        storage_url,
-                        parse_error=f"merge_stadiu_lines: {me!r}",
-                        row_count=0,
-                    )
-                else:
-                    n_db = db.count_stadiu_lines_for_document(storage_url)
-                    n_par = len(lines)
-                    if n_db == 0 and n_par > 0:
-                        msg = (
-                            f"после merge в БД 0 строк при {n_par} строках парсера "
-                            f"(doc_url={storage_url[:160]})"
-                        )
-                        log.error("stadiu: %s", msg)
-                        db.mark_stadiu_document_merge_mismatch(
-                            storage_url,
-                            parse_error=msg,
-                            row_count=0,
-                        )
-                    elif n_db != n_par:
-                        log.warning(
-                            "stadiu: строк в БД=%s, в парсере=%s (документ %s)",
-                            n_db,
-                            n_par,
-                            storage_url[:100],
-                        )
+                db.finalize_stadiu_lines_for_document(storage_url, lines)
 
             try:
                 saved.unlink(missing_ok=True)
