@@ -75,21 +75,32 @@ def _chrome_options(download_dir: Path, user_agent: str, *, stealth: bool) -> we
 
 def build_chrome(download_dir: Path, user_agent: str) -> webdriver.Chrome:
     download_dir.mkdir(parents=True, exist_ok=True)
+    # Сначала CHROMEDRIVER_PATH (Docker/Railway), затем webdriver-manager; если версии
+    # Chrome и драйвера не совпали — второй вариант часто спасает на Mac.
+    driver_paths: list[str] = []
     if CHROMEDRIVER_PATH:
-        service = Service(CHROMEDRIVER_PATH)
-    else:
-        service = Service(ChromeDriverManager().install())
+        driver_paths.append(CHROMEDRIVER_PATH.strip())
+    wdm_path = ChromeDriverManager().install()
+    if wdm_path and wdm_path not in driver_paths:
+        driver_paths.append(wdm_path)
+    services = [Service(p) for p in driver_paths if p]
 
-    for stealth in (True, False):
-        opts = _chrome_options(download_dir, user_agent, stealth=stealth)
-        try:
-            driver = webdriver.Chrome(service=service, options=opts)
-            driver.set_page_load_timeout(max(float(PAGE_LOAD_TIMEOUT), 120.0))
-            return driver
-        except SessionNotCreatedException:
-            if stealth:
-                continue
-            raise
+    last_exc: SessionNotCreatedException | None = None
+    for service in services:
+        for stealth in (True, False):
+            opts = _chrome_options(download_dir, user_agent, stealth=stealth)
+            try:
+                driver = webdriver.Chrome(service=service, options=opts)
+                driver.set_page_load_timeout(max(float(PAGE_LOAD_TIMEOUT), 120.0))
+                return driver
+            except SessionNotCreatedException as e:
+                last_exc = e
+                if stealth:
+                    continue
+                break
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("build_chrome: не удалось создать сессию")
 
 
 def _page_source_safe(driver: webdriver.Chrome) -> str:
